@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Nur beim Initialisieren des EIGENEN leeren PG18-Volumes durch das PG-Image.
+set -euo pipefail
+[[ ${HINDSIGHT_DB_PASSWORD:-} =~ ^[0-9a-f]{64}$ ]] || {
+  printf '%s\n' 'Abbruch: App-Passwort muss ein lokal erzeugtes 64-stelliges Hex-Geheimnis sein.' >&2
+  exit 1
+}
+export PGPASSWORD="${POSTGRES_PASSWORD:?}"
+psql -v ON_ERROR_STOP=1 --username postgres --dbname hindsight <<'SQL'
+\getenv app_password HINDSIGHT_DB_PASSWORD
+CREATE ROLE hindsight LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD :'app_password';
+ALTER DATABASE hindsight OWNER TO hindsight;
+REVOKE ALL ON DATABASE hindsight FROM PUBLIC;
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS btree_gin;
+ALTER SCHEMA public OWNER TO hindsight;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+SQL
+unset PGPASSWORD

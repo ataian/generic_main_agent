@@ -1,0 +1,113 @@
+# SPDX-License-Identifier: MIT
+# NUR VORLAGE. Vor Benutzung references/hindsight.md vollständig lesen.
+# Linux Docker Engine: API teilt Host-Netz, bindet aber ausdrücklich nur Loopback.
+name: ${COMPOSE_PROJECT_NAME:?Eigene eindeutige Projektkennung setzen}
+services:
+  db:
+    image: ${POSTGRES_IMAGE:?Freigegebenes pgvector-Image mit echtem sha256-Digest setzen}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: hindsight
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Lokales Admin-Passwort fehlt}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+      HINDSIGHT_DB_PASSWORD: ${HINDSIGHT_DB_PASSWORD:?Lokales App-Passwort fehlt}
+    ports:
+      - "127.0.0.1:${HINDSIGHT_DB_PORT:?Freien DB-Port setzen}:5432"
+    volumes:
+      # PostgreSQL 18: nicht den alten PG17-Pfad /var/lib/postgresql/data verwenden.
+      - pgdata:/var/lib/postgresql
+      - ./init-db.sh:/docker-entrypoint-initdb.d/10-hindsight.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U postgres -d hindsight']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+
+  api:
+    image: ${HINDSIGHT_IMAGE:?Freigegebenes API-slim-Image mit echtem sha256-Digest setzen}
+    restart: unless-stopped
+    network_mode: host
+    # Keine ports:-Sektion bei host networking. Direkter CLI-Aufruf umgeht
+    # den All-in-one-Launcher und seine optionalen zusätzlichen Listener.
+    entrypoint: [hindsight-api]
+    command: [--host, 127.0.0.1, --port, '9177', --workers, '1', --no-access-log]
+    depends_on:
+      db: {condition: service_healthy}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      HINDSIGHT_API_HOST: 127.0.0.1
+      HINDSIGHT_API_PORT: '9177'
+      HINDSIGHT_API_LOG_LEVEL: warning
+      HINDSIGHT_API_DATABASE_URL: postgresql://hindsight:${HINDSIGHT_DB_PASSWORD:?}@127.0.0.1:${HINDSIGHT_DB_PORT:?}/hindsight
+      HINDSIGHT_API_DATABASE_BACKEND: postgresql
+      HINDSIGHT_API_DATABASE_SCHEMA: public
+      HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP: 'true'
+      HINDSIGHT_API_VECTOR_EXTENSION: pgvector
+      HINDSIGHT_API_TEXT_SEARCH_EXTENSION: native
+      HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE: german
+      HINDSIGHT_API_DB_POOL_MIN_SIZE: '2'
+      HINDSIGHT_API_DB_POOL_MAX_SIZE: '10'
+      HINDSIGHT_API_TENANT_EXTENSION: hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
+      HINDSIGHT_API_TENANT_API_KEY: ${HINDSIGHT_API_TOKEN:?Eigenes API-Token fehlt}
+      HINDSIGHT_API_MCP_ENABLED: 'false'
+      HINDSIGHT_ENABLE_CP: 'false'
+      HINDSIGHT_API_WORKER_ENABLED: 'true'
+      HINDSIGHT_API_ENABLE_OBSERVATIONS: 'true'
+      HINDSIGHT_API_ENABLE_AUTO_CONSOLIDATION: 'true'
+      HINDSIGHT_API_ENABLE_RERANKING: 'true'
+      HINDSIGHT_API_LLM_PROVIDER: openai
+      HINDSIGHT_API_LLM_BASE_URL: ${LLM_BASE_URL:?Bereitgestellte OpenAI-Base-URL fehlt}
+      HINDSIGHT_API_LLM_MODEL: ${LLM_MODEL_ID:?Exakte Modell-ID fehlt}
+      HINDSIGHT_API_LLM_API_KEY: ${LLM_API_KEY:?Echter Key oder ausdrücklich bestätigter SDK-Dummy fehlt}
+      HINDSIGHT_API_LLM_STRICT_SCHEMA: 'true'
+      HINDSIGHT_API_LLM_MAX_CONCURRENT: '2'
+      HINDSIGHT_API_LLM_TIMEOUT: '120'
+      HINDSIGHT_API_RETAIN_LLM_PROVIDER: openai
+      HINDSIGHT_API_RETAIN_LLM_BASE_URL: ${LLM_BASE_URL:?}
+      HINDSIGHT_API_RETAIN_LLM_MODEL: ${LLM_MODEL_ID:?}
+      HINDSIGHT_API_RETAIN_LLM_API_KEY: ${LLM_API_KEY:?}
+      HINDSIGHT_API_REFLECT_LLM_PROVIDER: openai
+      HINDSIGHT_API_REFLECT_LLM_BASE_URL: ${LLM_BASE_URL:?}
+      HINDSIGHT_API_REFLECT_LLM_MODEL: ${LLM_MODEL_ID:?}
+      HINDSIGHT_API_REFLECT_LLM_API_KEY: ${LLM_API_KEY:?}
+      HINDSIGHT_API_CONSOLIDATION_LLM_PROVIDER: openai
+      HINDSIGHT_API_CONSOLIDATION_LLM_BASE_URL: ${LLM_BASE_URL:?}
+      HINDSIGHT_API_CONSOLIDATION_LLM_MODEL: ${LLM_MODEL_ID:?}
+      HINDSIGHT_API_CONSOLIDATION_LLM_API_KEY: ${LLM_API_KEY:?}
+      HINDSIGHT_API_MENTAL_MODEL_REFRESH_LLM_PROVIDER: openai
+      HINDSIGHT_API_MENTAL_MODEL_REFRESH_LLM_BASE_URL: ${LLM_BASE_URL:?}
+      HINDSIGHT_API_MENTAL_MODEL_REFRESH_LLM_MODEL: ${LLM_MODEL_ID:?}
+      HINDSIGHT_API_MENTAL_MODEL_REFRESH_LLM_API_KEY: ${LLM_API_KEY:?}
+      # TEI nur bei nachgewiesenem Protokoll und ohne zusätzliche HTTP-Auth!
+      HINDSIGHT_API_EMBEDDINGS_PROVIDER: tei
+      HINDSIGHT_API_EMBEDDINGS_TEI_URL: ${EMBEDDING_TEI_URL:?Bereitgestellte TEI-URL fehlt}
+      HINDSIGHT_API_EMBEDDINGS_TEI_BATCH_SIZE: '8'
+      HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX: ${EMBEDDING_QUERY_PREFIX-}
+      HINDSIGHT_API_EMBEDDINGS_PASSAGE_PREFIX: ${EMBEDDING_PASSAGE_PREFIX-}
+      HINDSIGHT_API_RERANKER_PROVIDER: tei
+      HINDSIGHT_API_RERANKER_TEI_URL: ${RERANKER_TEI_URL:?Bereitgestellte TEI-URL fehlt}
+      HINDSIGHT_API_RERANKER_TEI_BATCH_SIZE: '8'
+      HINDSIGHT_API_RERANKER_TEI_MAX_CONCURRENT: '1'
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,urllib.request; r=urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:9177/health',timeout=3); assert json.load(r).get('status') == 'healthy'"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+volumes:
+  pgdata: {}

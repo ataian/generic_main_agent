@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""Spätere, bewusst gestartete Abnahme. Kein Hermes-Adapter, kein Dauerprozess.
+Nur Python-Standardbibliothek; nie .env als Programm ausführen.
+Phasen: preflight, inference, seed, read, create-own.
+seed schreibt ausschließlich in die NEUE Testbank; read schreibt kein Memory,
+ruft aber Reflect auf (Inferenzkosten). create-own erzeugt nur die neue eigene Bank.
+Kein Löschen, keine Installation, keine Container-/Hermes-Steuerung.
+"""
+import argparse
+import json
+import math
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+def require(ok, message):
+    if not ok:
+        raise RuntimeError(message)
+
+
+def read_env(path):
+    require(not path.is_symlink(), '.env darf kein Symlink sein')
+    mode = path.stat()
+    require(mode.st_uid == os.getuid() and not stat.S_IMODE(mode.st_mode) & 0o077,
+            '.env muss dem Benutzer gehören und Modus 600 (oder strenger) haben')
+    result = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        key, sep, value = line.partition('=')
+        require(sep and re.fullmatch(r'[A-Z][A-Z0-9_]*', key), 'Ungültige .env-Zeile')
+        require(key not in result, 'Doppelter .env-Schlüssel')
+        # Bewusst kleine, mit Compose kompatible Teilmenge. Kein eval/source.
+        if len(value) >= 2 and value[0] == value[-1] == "'":
+            value = value[1:-1]
+            require("'" not in value, 'Nicht unterstütztes Quoting')
+        else:
+            require(not any(c.isspace() for c in value), 'Leerzeichen nur einfach zitieren')
+            require(not any(c in value for c in "\"'#"), 'Nicht unterstütztes Quoting/Kommentar')
+        require('$' not in value and '\\' not in value, 'Keine Interpolation/Escape-Sequenzen')
+        result[key] = value
+    return result
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# Keine Umgebungs-Proxys und keine Weitergabe von Bearer-Token über Redirects.
+HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+
+
+def request(url, method='GET', payload=None, token=None, timeout=120):
+    headers = {'Accept': 'application/json'}
+    if token:
+        headers['Authorization'] = 'Bearer ' + token
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode()
+        headers['Content-Type'] = 'application/json'
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with HTTP.open(req, timeout=timeout) as response:
+        return json.load(response)
+
+
+def loopback(url):
+    u = urllib.parse.urlsplit(url)
+    require(u.scheme == 'http' and u.hostname == '127.0.0.1' and u.port
+            and not u.username and not u.password and not u.query and not u.fragment,
+            'Nur bereitgestellte http://127.0.0.1:PORT-URLs ohne Credentials/Query zulässig')
+
+
+def validate(env):
+    # Compose priorisiert bereits exportierte Shellwerte gegenüber --env-file.
+    # Nicht heimlich umkonfigurieren: abweichenden Kontext vor jeder Nutzung klären.
+    require(all(key not in os.environ or os.environ[key] == value for key, value in env.items()),
+            'Exportierte Umgebungsvariable widerspricht .env; bereinigten Zielkontext verwenden')
+    mandatory = ['COMPOSE_PROJECT_NAME', 'HINDSIGHT_IMAGE', 'POSTGRES_IMAGE',
+                 'HINDSIGHT_DB_PORT', 'POSTGRES_ADMIN_PASSWORD', 'HINDSIGHT_DB_PASSWORD',
+                 'HINDSIGHT_API_TOKEN', 'LLM_BASE_URL', 'LLM_MODEL_ID', 'LLM_API_KEY',
+                 'EMBEDDING_TEI_URL', 'EMBEDDING_MODEL_ID', 'EMBEDDING_DIMENSION',
+                 'RERANKER_TEI_URL', 'RERANKER_MODEL_ID', 'HINDSIGHT_BANK_ID',
+                 'HINDSIGHT_TEST_BANK_ID']
+    require(all(env.get(k) for k in mandatory), 'Pflichtwerte fehlen; .env lokal ergänzen')
+    for key in ['POSTGRES_ADMIN_PASSWORD', 'HINDSIGHT_DB_PASSWORD', 'HINDSIGHT_API_TOKEN']:
+        require(re.fullmatch('[0-9a-f]{64}', env[key]), 'Lokale Secrets müssen je 64 Hexzeichen haben')
+    require(len({env[k] for k in ['POSTGRES_ADMIN_PASSWORD', 'HINDSIGHT_DB_PASSWORD',
+                                 'HINDSIGHT_API_TOKEN']}) == 3, 'Secrets dürfen nicht gleich sein')
+    for key, prefix in [('HINDSIGHT_IMAGE', 'ghcr.io/vectorize-io/hindsight-api:1.0.0-slim'),
+                        ('POSTGRES_IMAGE', 'pgvector/pgvector:0.8.7-pg18-bookworm')]:
+        require(re.fullmatch(re.escape(prefix) + r'@sha256:[0-9a-f]{64}', env[key]),
+                'Image muss zur dokumentierten Version passen und echten Digest enthalten')
+    require(re.fullmatch('[a-z0-9][a-z0-9_-]*', env['COMPOSE_PROJECT_NAME']), 'Ungültige Projektkennung')
+    port = int(env['HINDSIGHT_DB_PORT'])
+    require(1024 <= port <= 65535 and port != 9177, 'Ungültiger DB-Port')
+    for key in ['HINDSIGHT_BANK_ID', 'HINDSIGHT_TEST_BANK_ID']:
+        require(re.fullmatch('[a-z0-9][a-z0-9_-]{0,62}', env[key]), 'Ungültige Bank-ID')
+    require(env['HINDSIGHT_BANK_ID'] != env['HINDSIGHT_TEST_BANK_ID'], 'Test- und eigene Bank müssen verschieden sein')
+    for key in ['LLM_BASE_URL', 'EMBEDDING_TEI_URL', 'RERANKER_TEI_URL']:
+        loopback(env[key])
+        require(urllib.parse.urlsplit(env[key]).port not in [port, 9177], 'Modellport kollidiert mit API/DB')
+    require(env['LLM_BASE_URL'].rstrip('/').endswith('/v1'), 'LLM-Base-URL muss den gelieferten /v1-Pfad enthalten')
+    require(int(env['EMBEDDING_DIMENSION']) > 0, 'Embedding-Dimension fehlt')
+
+
+def bank_list(api):
+    banks, offset = [], 0
+    for _ in range(100):
+        page = api('/v1/default/banks?limit=100&offset=' + str(offset))
+        rows = page['banks']
+        banks.extend(rows)
+        if len(rows) < 100:
+            return banks
+        offset += len(rows)
+    raise RuntimeError('Bankliste überschreitet Prüfgrenze; nichts angelegt')
+
+
+def create_bank(api, bank):
+    require(all(b['bank_id'] != bank for b in bank_list(api)),
+            'Bank existiert bereits: keine Übernahme/PUT-Wiederholung; Besitz und Wiederaufnahme prüfen')
+    api('/v1/default/banks/' + bank, 'PUT', {'name': bank, 'enable_observations': True})
+    require(any(b['bank_id'] == bank for b in bank_list(api)), 'Bank nicht zurückgelesen')
+    require(api('/v1/default/banks/' + bank + '/stats')['total_nodes'] == 0, 'Neue Bank ist nicht leer')
+
+
+def poll(api, bank, operation):
+    deadline = time.monotonic() + 600
+    path = '/v1/default/banks/' + bank + '/operations/' + urllib.parse.quote(operation, safe='')
+    while time.monotonic() < deadline:
+        state = api(path, timeout=20)
+        if state['status'] == 'completed':
+            require(not state.get('error_message'), 'Operation hat Fehler trotz completed')
+            return state
+        require(state['status'] in ['pending', 'processing'], 'Operation fehlgeschlagen/abgebrochen')
+        time.sleep(2)
+    raise RuntimeError('Verarbeitung nicht innerhalb 600 Sekunden abgeschlossen')
+
+
+def inference(env):
+    llm = env['LLM_BASE_URL'].rstrip('/')
+    models = request(llm + '/models', token=env['LLM_API_KEY'])
+    require(any(x['id'] == env['LLM_MODEL_ID'] for x in models['data']), 'LLM-ID nicht im gelieferten Katalog')
+    result = request(llm + '/chat/completions', 'POST', {
+        'model': env['LLM_MODEL_ID'],
+        'messages': [{'role': 'user', 'content': 'Antworte als JSON: ok ist true.'}],
+        'response_format': {'type': 'json_schema', 'json_schema': {
+            'name': 'maker_probe', 'strict': True,
+            'schema': {'type': 'object', 'properties': {'ok': {'type': 'boolean'}},
+                       'required': ['ok'], 'additionalProperties': False}}},
+        'max_tokens': 128
+    }, env['LLM_API_KEY'])
+    require(json.loads(result['choices'][0]['message']['content']) == {'ok': True},
+            'Strukturierte LLM-Antwort ungültig')
+    emb = env['EMBEDDING_TEI_URL'].rstrip('/')
+    rank = env['RERANKER_TEI_URL'].rstrip('/')
+    require(request(emb + '/info')['model_id'] == env['EMBEDDING_MODEL_ID'], 'Embedding-Modell weicht ab')
+    require(request(rank + '/info')['model_id'] == env['RERANKER_MODEL_ID'], 'Reranker-Modell weicht ab')
+    vectors = request(emb + '/embed', 'POST', {'inputs': ['Der Termin ist nicht am Montag.']})
+    require(len(vectors) == 1 and len(vectors[0]) == int(env['EMBEDDING_DIMENSION'])
+            and all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+                    for x in vectors[0]), 'Embedding-Form/Dimension ungültig')
+    scores = request(rank + '/rerank', 'POST', {'query': 'Wann ist der Termin?',
+        'texts': ['Der Termin ist Dienstag.', 'Das Auto ist grün.'], 'return_text': False})
+    require(len(scores) == 2 and {x['index'] for x in scores} == {0, 1}
+            and all(math.isfinite(float(x['score'])) for x in scores), 'Reranker-Antwort ungültig')
+    return {'inference_protocol_checks': 'passed', 'rerank_scores': scores,
+            'embedding_dimension': len(vectors[0]), 'model_quality': 'manuell zu bewerten'}
+
+
+def memory_read(api, bank):
+    root = '/v1/default/banks/' + bank
+    stats = api(root + '/stats')
+    require(stats['total_nodes'] > 0 and stats['total_observations'] > 0,
+            'Fakten oder konsolidierte Beobachtungen fehlen')
+    require(stats['pending_operations'] == 0 and stats['failed_operations'] == 0
+            and stats['pending_consolidation'] == 0 and stats['failed_consolidation'] == 0,
+            'Offene oder fehlgeschlagene Verarbeitung; Diagnose statt Erfolg')
+    observations = api(root + '/memories/list?type=observation&limit=100')
+    require(observations['total'] > 0 and observations['items'], 'Keine tatsächlichen Beobachtungen')
+    recall = api(root + '/memories/recall', 'POST', {
+        'query': 'Welche Termin- und Rauminformationen gelten für das fiktive Projekt Kupferfink?',
+        'types': ['world', 'experience', 'observation'], 'budget': 'mid', 'max_tokens': 2048})
+    require(recall.get('results'), 'Recall liefert keine Fakten')
+    reflection = api(root + '/reflect', 'POST', {
+        'query': 'An welchem Wochentag und in welchem Raum trifft sich das fiktive Projekt Kupferfink? Ist Montag richtig?',
+        'budget': 'mid', 'max_tokens': 1024})
+    require(isinstance(reflection.get('text'), str) and reflection['text'].strip(), 'Reflect ist leer')
+    return {'bank_id': bank, 'stats': stats, 'observations': observations,
+            'recall': recall, 'reflect': reflection,
+            'semantic_acceptance': 'OFFEN: Mensch muss Dienstag, Raum Birke und NICHT Montag prüfen'}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('phase', choices=['preflight', 'inference', 'seed', 'read', 'create-own'])
+    parser.add_argument('--env', type=Path, default=Path('.env'))
+    parser.add_argument('--out', type=Path, required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    env = read_env(args.env)
+    validate(env)
+    require(not args.out.exists(), 'Nachweisdatei existiert; neuen Dateinamen verwenden')
+    def api(path, method='GET', payload=None, timeout=120):
+        return request('http://127.0.0.1:9177' + path, method, payload,
+                       env['HINDSIGHT_API_TOKEN'], timeout)
+    if args.phase == 'preflight':
+        result = {'configuration_shape': 'passed', 'runtime': 'nicht geprüft'}
+    elif args.phase == 'inference':
+        result = inference(env)
+    else:
+        # Bankdaten müssen ohne Token verweigert werden; /health kann öffentlich sein.
+        try:
+            request('http://127.0.0.1:9177/v1/default/banks', timeout=5)
+        except urllib.error.HTTPError as exc:
+            require(exc.code in [401, 403], 'Auth-Negativtest liefert unerwarteten Status')
+        else:
+            raise RuntimeError('Bankliste ohne Token lesbar: Abbruch')
+        require(api('/health')['status'] == 'healthy', 'API nicht bereit')
+        if args.phase == 'create-own':
+            bank = env['HINDSIGHT_BANK_ID']
+            create_bank(api, bank)
+            result = {'own_bank_created_and_empty': bank}
+        else:
+            bank = env['HINDSIGHT_TEST_BANK_ID']
+            operations = []
+            if args.phase == 'seed':
+                create_bank(api, bank)
+                root = '/v1/default/banks/' + bank
+                retained = api(root + '/memories', 'POST', {'async': True, 'items': [{
+                    'content': 'Synthetischer Einrichtungstest, keine echte Person: Das Projekt Kupferfink trifft sich dienstags im Raum Birke. Es trifft sich nicht montags.',
+                    'context': 'Fiktive Maker-Abnahme', 'document_id': 'maker-kupferfink',
+                    'tags': ['maker-abnahme']}]})
+                require(retained['success'] is True, 'Retain nicht angenommen')
+                ids = retained.get('operation_ids') or [retained.get('operation_id')]
+                require(ids and all(isinstance(i, str) and i for i in ids), 'Retain-Operations-ID fehlt')
+                operations.extend(poll(api, bank, op) for op in set(ids))
+                consolidated = api(root + '/consolidate', 'POST', {})
+                operations.append(poll(api, bank, consolidated['operation_id']))
+            result = memory_read(api, bank)
+            result['operations_checked_this_run'] = operations
+    with args.out.open('x', encoding='utf-8') as output:
+        json.dump(result, output, ensure_ascii=False, indent=2)
+    print('Technische Prüfergebnisse gespeichert. Fachliche und zusätzliche Abnahmepunkte siehe Anleitung.')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as exc:
+        # Keine HTTP-Bodies, Secrets oder fremden Fehlertexte in Konsolen/Chat ausgeben.
+        print('Prüfung abgebrochen (' + type(exc).__name__ + '). Kein Gesamterfolg; lokal gezielt diagnostizieren.',
+              file=sys.stderr)
+        sys.exit(1)

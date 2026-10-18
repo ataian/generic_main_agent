@@ -1,0 +1,71 @@
+{
+  "name": "generic-main-agent",
+  "version": "0.1.0",
+  "license": "MIT",
+  "platforms": [
+    "linux"
+  ],
+  "maker": "generic-main-agent-maker",
+  "skills": [
+    {
+      "name": "generic-main-agent-maker",
+      "path": "skills/generic-main-agent-maker",
+      "required": true
+    },
+    {
+      "name": "hermes-agent",
+      "path": "skills/hermes-agent",
+      "required": true
+    },
+    {
+      "name": "obsidian",
+      "path": "skills/obsidian",
+      "required": true
+    },
+    {
+      "name": "gedaechtnis-praxis",
+      "path": "skills/gedaechtnis-praxis",
+      "required": true
+    },
+    {
+      "name": "grounded-citations",
+      "path": "skills/grounded-citations",
+      "required": true
+    },
+    {
+      "name": "minimal-change-engineering",
+      "path": "skills/minimal-change-engineering",
+      "required": true
+    },
+    {
+      "name": "fremde-installer-pruefen",
+      "path": "skills/fremde-installer-pruefen",
+      "required": true
+    },
+    {
+      "name": "pdf",
+      "path": "skills/pdf",
+      "required": true
+    },
+    {
+      "name": "local-backup-restore",
+      "path": "skills/local-backup-restore",
+      "required": true
+    },
+    {
+      "name": "obsidian-daily-summary",
+      "path": "skills/obsidian-daily-summary",
+      "required": true
+    }
+  ],
+  "defaults": {
+    "vault": "~/obsidian_vault",
+    "projects": "~/projects",
+    "daily_summary_schedule": "0 2 * * *",
+    "backup_schedule": "0 3 * * *",
+    "timezone": "detected-local",
+    "backup_root": "~/backups",
+    "retention_days": 30
+  },
+  "verification": "static-only; no maker or installation execution"
+}

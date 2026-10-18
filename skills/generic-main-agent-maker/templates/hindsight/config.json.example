@@ -1,0 +1,17 @@
+{
+  "mode": "local_external",
+  "api_url": "http://127.0.0.1:9177",
+  "bank_id": "REPLACE_WITH_OWN_NEW_BANK_ID",
+  "recall_budget": "mid",
+  "auto_recall": true,
+  "auto_retain": true,
+  "retain_every_n_turns": 2,
+  "memory_mode": "hybrid",
+  "recall_prefetch_method": "recall",
+  "recall_types": ["observation", "world", "experience"],
+  "bank_id_template": "",
+  "additional_banks": [],
+  "recall_additional_banks": [],
+  "trusted_project_dirs": [],
+  "mirror_to_own_bank": false
+}

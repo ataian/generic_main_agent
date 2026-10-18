@@ -1,0 +1,10 @@
+# Private planning sources; never distribute
+.local/
+/references/
+/dist/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+*.secret

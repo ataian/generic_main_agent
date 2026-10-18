@@ -1,0 +1,10 @@
+{
+  "hermes_home": "/home/REPLACE_USER/.hermes",
+  "vault": "/home/REPLACE_USER/REPLACE_VAULT",
+  "backup_root": "/home/REPLACE_USER/backups/REPLACE_UNIQUE_INSTANCE",
+  "compose_file": "/home/REPLACE_USER/.config/REPLACE_HINDSIGHT/compose.yaml",
+  "compose_project": "REPLACE_UNIQUE_COMPOSE_PROJECT",
+  "db_service": "db",
+  "db_user": "hindsight",
+  "db_name": "hindsight"
+}

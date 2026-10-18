@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "package_version": "0.1.0",
+  "instance_id": "main",
+  "source_checkout": null,
+  "hermes_home": null,
+  "timezone": null,
+  "approval": {"setup": false, "soul": false, "own_backup_rotation": false},
+  "steps": {
+    "preflight": {"status": "pending", "evidence": []},
+    "soul_skills": {"status": "pending", "evidence": []},
+    "vault": {"status": "pending", "evidence": []},
+    "channel": {"status": "pending", "evidence": []},
+    "firecrawl": {"status": "pending", "evidence": []},
+    "router_registration": {"status": "waiting_user", "evidence": []},
+    "hindsight": {"status": "pending", "evidence": []},
+    "daily_summary": {"status": "pending", "evidence": []},
+    "backup_restore": {"status": "pending", "evidence": []}
+  },
+  "cron_ids": {"daily_summary": null, "backup": null},
+  "blocked_reasons": []
+}

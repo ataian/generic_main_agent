@@ -144,6 +144,20 @@ def main():
     check("nicht ausgeführt" in readme, "README must disclose non-execution")
     soul = (ROOT / "skills/generic-main-agent-maker/templates/SOUL.md.template").read_text()
     check(set(re.findall(r"\{\{(\w+)\}\}", soul)) == {"AGENT_NAME", "USER_NAME"}, "SOUL placeholders")
+    principles = soul.split("## Kernprinzipien\n", 1)[-1].split("\n## ", 1)[0]
+    check(re.findall(r"^(\d+)\. \*\*", principles, re.M) == [str(n) for n in range(1, 11)],
+          "SOUL must retain ten explicit core principles")
+    for contract in (
+        "### Level 1 — Autonom", "### Level 2 — Autonom, ankündigen und verifizieren",
+        "### Level 3 — Vorherige ausdrückliche Zustimmung",
+        "höchste zutreffende Level", "warte nicht auf Zustimmung",
+        "ausschließlich deine eigene VM", "deren Server administrierst du nicht",
+        "## Geschützte lokale Grundlagen", "direkte und indirekte Abhängigkeiten",
+        "Eine einmalige Zustimmung ist keine Dauerfreigabe",
+        "Regeländerungen gelten nicht rückwirkend", "Aufräumen ist keine pauschale Löschbefugnis",
+        "offengelegte und ausdrücklich genehmigte Backup-Rotation",
+    ):
+        check(contract in soul, f"SOUL contract missing: {contract}")
     schedules = (ROOT / "skills/generic-main-agent-maker/references/zeitplaene.md").read_text()
     for contract in ("[CRON_FAILURE]", "failure_deliver", "HERMES_TIMEZONE", "paused=false"):
         check(contract in schedules, f"cron contract missing: {contract}")

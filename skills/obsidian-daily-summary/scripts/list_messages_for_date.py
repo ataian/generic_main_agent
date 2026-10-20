@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 EPOCH_MAX = 4_200_000_000.0
 SAFE_ID = re.compile(r"[A-Za-z0-9_.:-]{1,200}\Z")
-ROLES = {"system", "developer", "user", "assistant", "tool", "function"}
+ROLES = {"system", "developer", "user", "assistant", "tool", "function", "session_meta"}
 FLAGS = ("_compressed_summary", "active", "compacted")
 
 
